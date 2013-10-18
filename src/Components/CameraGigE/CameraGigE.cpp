@@ -5,19 +5,27 @@
 
 #include "CameraGigE.hpp"
 
+#include <boost/bind.hpp>
+
 #include "Utils.hpp"
 
 namespace Sources {
 namespace CameraGigE {
 
 CameraGigE::CameraGigE(const std::string & name) :
-	Base::Component(name) {
+	Base::Component(name),
+	m_device_address("device.address", std::string("")),
+	m_exposure_mode("image.exposure.mode", std::string("")),
+	m_exposure_value ("image.exposure.value", boost::bind(&CameraGigE::onExposureValueChanged, this, _1, _2), -1) {
 	LOG(LTRACE) << "Hello CameraGigE from dl\n";
 
 	if (PvInitialize() == ePvErrResources) {
 		LOG(LERROR) << "Unable to initialize GigE !!! \n";
-		//return false;
 	}
+
+	registerProperty(m_device_address);
+	registerProperty(m_exposure_mode);
+	registerProperty(m_exposure_value);
 }
 
 CameraGigE::~CameraGigE() {
@@ -26,18 +34,30 @@ CameraGigE::~CameraGigE() {
 	PvUnInitialize();
 }
 
-bool CameraGigE::onInit() {
-	LOG(LTRACE) << "CameraGigE::initialize\n";
-
+void CameraGigE::prepareInterface() {
 	h_onTrigger.setup(this, &CameraGigE::onTrigger);
 	registerHandler("onTrigger", &h_onTrigger);
 
-	newImage = registerEvent("newImage");
-	endOfSequence = registerEvent("endOfSequence");
-
 	registerStream("out_img", &out_img);
 
-	if (!props.address.empty()) {
+	h_onGrabFrame.setup(this, &CameraGigE::onGrabFrame);
+	registerHandler("onGrabFrame", &h_onGrabFrame);
+	addDependency("onGrabFrame", NULL);
+}
+
+bool CameraGigE::onInit() {
+	LOG(LTRACE) << "CameraGigE::initialize\n";
+
+	if (m_device_address != "") {
+		unsigned long ip = inet_addr(std::string(m_device_address).c_str());
+
+		if (PvCameraOpenByAddr(ip, ePvAccessMaster, &cHandle) != ePvErrSuccess) {
+			LOG(LERROR) << "Unable to open camera on address " << m_device_address << " \n";
+			return false;
+		}
+	}
+
+/*	if (!props.address.empty()) {
 		unsigned long ip = inet_addr(props.address.c_str());
 
 		if (PvCameraOpenByAddr(ip, ePvAccessMaster, &cHandle) != ePvErrSuccess) {
@@ -55,21 +75,20 @@ bool CameraGigE::onInit() {
 	} else {
 		return false;
 	}
+*/
 
 	// Set parameters
 	tPvErr err;
 	///	 Exposure
-	if (!props.exposureMode.empty()) {
-		if ((err = PvAttrEnumSet(cHandle, "ExposureMode",
-				props.exposureMode.c_str())) == ePvErrSuccess) {
-			if (props.exposureMode == "Manual") {
-				if ((err = PvAttrUint32Set(cHandle, "ExposureValue",
-						props.exposureValue / 1000000.0)) != ePvErrSuccess) {
+	if (m_exposure_mode != "") {
+		if ((err = PvAttrEnumSet(cHandle, "ExposureMode", std::string(m_exposure_mode).c_str())) == ePvErrSuccess) {
+			if (m_exposure_mode == "Manual") {
+				if ((err = PvAttrUint32Set(cHandle, "ExposureValue", m_exposure_value * 1000000.0)) != ePvErrSuccess) {
 					if (err == ePvErrOutOfRange) {
 						tPvUint32 min, max;
 						PvAttrRangeUint32(cHandle, "ExposureValue", &min, &max);
-						LOG(LWARNING) << "ExposureValue : "
-								<< props.exposureValue
+						CLOG(LWARNING) << "ExposureValue : "
+								<< m_exposure_value
 								<< " is out of range, valid range [ "
 								<< (double) min / 1000000.0 << " , "
 								<< (double) max / 1000000.0 << " ]\n";
@@ -77,9 +96,10 @@ bool CameraGigE::onInit() {
 				}
 			}
 		} else {
-			LOG(LWARNING) << "Unable to set ExposureMode \n";
+			CLOG(LWARNING) << "Unable to set ExposureMode \n";
 		}
 	}
+/*
 	/// Gain
 	if (!props.gainMode.empty()) {
 		if ((err = PvAttrEnumSet(cHandle, "GainMode", props.gainMode.c_str()))
@@ -212,15 +232,15 @@ bool CameraGigE::onInit() {
 					<< " is out of range, valid range [ " << (double) min
 					<< " , " << (double) max << " ]\n";
 		}
-	}
+	}*/
 	// ----------------
 
 	PvAttrEnumSet(cHandle, "FrameStartTriggerMode", "Freerun");
 
 	unsigned long frameSize = 0;
 
-	if (PvAttrUint32Get(cHandle, "TotalBytesPerFrame", &frameSize)
-			!= ePvErrSuccess) {
+	if (PvAttrUint32Get(cHandle, "TotalBytesPerFrame", &frameSize) != ePvErrSuccess) {
+		CLOG(LERROR) << "Camera init failed";
 		return false;
 	}
 
@@ -231,13 +251,13 @@ bool CameraGigE::onInit() {
 }
 
 bool CameraGigE::onFinish() {
-	LOG(LTRACE) << "CameraGigE::finish\n";
+	CLOG(LTRACE) << "CameraGigE::finish\n";
 	PvCameraClose(cHandle);
 	return true;
 }
 
-bool CameraGigE::onStep() {
-	LOG(LTRACE) << "CameraGigE::onStep";
+void CameraGigE::onGrabFrame() {
+	CLOG(LTRACE) << "CameraGigE::onStep";
 
 	tPvErr Err = PvCaptureQueueFrame(cHandle, &frame, NULL);
 	if (!Err) {
@@ -248,12 +268,11 @@ bool CameraGigE::onStep() {
 						== ePvFmtMono8) ? CV_8UC1 : CV_8UC3, frame.ImageBuffer);
 
 				out_img.write(img);
-				newImage->raise();
+			} else {
+				CLOG(LWARNING) << "Grab failed, error " << frame.Status << " [" << getErrorMsg(frame.Status) << "]";
 			}
 		}
 	}
-
-	return true;
 }
 
 bool CameraGigE::onStart() {
@@ -278,6 +297,13 @@ bool CameraGigE::onStop() {
 
 void CameraGigE::onTrigger() {
 
+}
+
+void CameraGigE::onExposureValueChanged(const double & old_exp, const double & new_exp) {
+	tPvErr err;
+	if ((err = PvAttrUint32Set(cHandle, "ExposureValue", m_exposure_value * 1000000.0)) != ePvErrSuccess) {
+		CLOG(LWARNING) << "Error while setting new exposure " << new_exp << " [" << getErrorMsg(err) << "]";
+	}
 }
 
 }//: namespace Sequence

@@ -9,14 +9,13 @@
 
 #include "Component_Aux.hpp"
 #include "Component.hpp"
-#include "Panel_Empty.hpp"
 #include "DataStream.hpp"
-#include "Props.hpp"
+#include "Property.hpp"
 
 #include <vector>
 #include <string>
 
-#include <cv.h>
+#include <opencv2/opencv.hpp>
 
 #ifdef _WINDOWS
 #define WIN32_LEAN_AND_MEAN
@@ -115,7 +114,7 @@
 
 namespace Sources {
 namespace CameraGigE {
-
+/*
 struct Props : public Base::Props {
 	// Device
 	std::string address;
@@ -198,7 +197,7 @@ struct Props : public Base::Props {
 		pt.put("ImageMode.BinningX", binningX);
 		pt.put("ImageMode.BinningY", binningY);
 	}
-};
+};*/
 
 /*!
  * \class Sequence
@@ -217,13 +216,6 @@ public:
 	 */
 	virtual ~CameraGigE();
 
-	/*!
-	 * Return sequence properties
-	 */
-	Base::Props * getProperties() {
-		return &props;
-	}
-
 protected:
 
 	/*!
@@ -236,10 +228,7 @@ protected:
 	 */
 	bool onFinish();
 
-	/*!
-	 * Retrieves data from device.
-	 */
-	bool onStep();
+	void prepareInterface();
 
 	/*!
 	 * Start component
@@ -251,13 +240,6 @@ protected:
 	 */
 	bool onStop();
 
-
-	/// Event signaling that new image was retrieved.
-	Base::Event * newImage;
-
-	/// Sequence has ended
-	Base::Event * endOfSequence;
-
 	/// Output data stream
 	Base::DataStreamOut<cv::Mat> out_img;
 
@@ -267,8 +249,23 @@ protected:
 	 */
 	void onTrigger();
 
+	/*!
+	 * Retrieves data from device.
+	 */
+	void onGrabFrame();
+
 	/// Event handler.
 	Base::EventHandler<CameraGigE> h_onTrigger;
+
+	/// Event handler.
+	Base::EventHandler<CameraGigE> h_onGrabFrame;
+
+	Base::Property<std::string> m_device_address;
+
+	Base::Property<std::string> m_exposure_mode;
+
+	Base::Property<double> m_exposure_value;
+	void onExposureValueChanged(const double & old_exp, const double & new_exp);
 
 private:
 	/// Camera handle
@@ -278,8 +275,33 @@ private:
 	/// current frame
 	cv::Mat img;
 
-	/// sequence properties
-	Props props;
+	std::string getErrorMsg(tPvErr err) {
+		switch(err) {
+		case ePvErrSuccess: return "No error";
+	    case ePvErrCameraFault: return "Unexpected camera fault";
+	    case ePvErrInternalFault: return "Unexpected fault in PvApi or driver";
+	    case ePvErrBadHandle: return "Camera handle is invalid";
+	    case ePvErrBadParameter: return "Bad parameter to API call";
+	    case ePvErrBadSequence: return "Sequence of API calls is incorrect";
+	    case ePvErrNotFound: return "Camera or attribute not found";
+	    case ePvErrAccessDenied: return "Camera cannot be opened in the specified mode";
+	    case ePvErrUnplugged: return "Camera was unplugged";
+	    case ePvErrInvalidSetup: return "Setup is invalid (an attribute is invalid)";
+	    case ePvErrResources: return "System/network resources or memory not available";
+	    case ePvErrBandwidth: return "1394 bandwidth not available";
+	    case ePvErrQueueFull: return "Too many frames on queue";
+	    case ePvErrBufferTooSmall: return "Frame buffer is too small";
+	    case ePvErrCancelled: return "Frame canceled by user";
+	    case ePvErrDataLost: return "The data for the frame was lost";
+	    case ePvErrDataMissing: return "Some data in the frame is missing";
+	    case ePvErrTimeout: return "Timeout during wait";
+	    case ePvErrOutOfRange: return "Attribute value is out of the expected range";
+	    case ePvErrWrongType: return "Attribute is not this type (wrong access function) ";
+	    case ePvErrForbidden: return "Attribute write forbidden at this time";
+	    case ePvErrUnavailable: return "Attribute is not available at this time";
+	    case ePvErrFirewall: return "A firewall is blocking the traffic (Windows only)";
+		}
+	}
 
 };
 
@@ -289,6 +311,6 @@ private:
 /*
  * Register source component.
  */
-REGISTER_SOURCE_COMPONENT("CameraGigE", Sources::CameraGigE::CameraGigE, Common::Panel_Empty)
+REGISTER_COMPONENT("CameraGigE", Sources::CameraGigE::CameraGigE)
 
 #endif /* CAMERAGIGE_HPP_ */
