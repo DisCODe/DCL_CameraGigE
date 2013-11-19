@@ -243,6 +243,7 @@ protected:
 	/// Output data stream
 	Base::DataStreamOut<cv::Mat> out_img;
 
+	Base::DataStreamIn<Base::UnitType> in_trigger;
 
 	/*!
 	 * Event handler function.
@@ -262,6 +263,9 @@ protected:
 
 	Base::Property<std::string> m_device_address;
 
+	Base::Property<std::string> m_acquisition_mode;
+	void onAcquisitionModeChanged(const std::string & old_mode, const std::string & new_mode);
+
 	Base::Property<std::string> m_exposure_mode;
 
 	Base::Property<double> m_exposure_value;
@@ -270,10 +274,17 @@ protected:
 private:
 	/// Camera handle
 	tPvHandle 	cHandle;
-	tPvFrame	frame;
+
+	/// Frame buffer
+	tPvFrame	frame[2];
+
+	/// Current frame buffer index
+	int frame_idx;
 
 	/// current frame
 	cv::Mat img;
+
+	bool trigger;
 
 	std::string getErrorMsg(tPvErr err) {
 		switch(err) {

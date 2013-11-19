@@ -7,19 +7,25 @@
 		</Author>
 	
 		<Description>
-			<brief>Simple camera viewer</brief>
-			<full>Simple camera viewer</full>
+			<brief>Triggered camera viewer</brief>
+			<full>Triggered camera viewer</full>
 		</Description>
 	</Reference>
 
 	<!-- task definition -->
 	<Subtasks>
 		<Subtask name="Processing">
+			<Executor name="Exec0" period="1.0">
+				<Component name="Trigger" type="CameraGigE:Trigger" priority="1" bump="0">
+				</Component>
+			</Executor>			
+
 			<Executor name="Exec1" period="0.04">
 				<Component name="Source" type="CameraGigE:CameraGigE" priority="1" bump="0">
-					<param name="device.address">192.168.50.2</param>
+					<param name="device.address">192.168.51.2</param>
 					<param name="image.exposure.mode">Manual</param>
 					<param name="image.exposure.value">0.02</param>
+					<param name="acquisition.mode">SingleFrame</param>
 				</Component>
 			</Executor>
 		</Subtask>
@@ -40,6 +46,9 @@
 	
 	<!-- pipes connecting datastreams -->
 	<DataStreams>
+		<Source name="Trigger.out_trigger">
+			<sink>Source.in_trigger</sink>	
+		</Source>
 		<Source name="Source.out_img">
 			<sink>Window.in_img</sink>
 		</Source>

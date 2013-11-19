@@ -15,8 +15,9 @@ namespace CameraGigE {
 CameraGigE::CameraGigE(const std::string & name) :
 	Base::Component(name),
 	m_device_address("device.address", std::string("")),
+	m_acquisition_mode("acquisition.mode", boost::bind(&CameraGigE::onAcquisitionModeChanged, this, _1, _2), std::string("Continuous")),
 	m_exposure_mode("image.exposure.mode", std::string("")),
-	m_exposure_value ("image.exposure.value", boost::bind(&CameraGigE::onExposureValueChanged, this, _1, _2), -1) {
+	m_exposure_value ("image.exposure.value", boost::bind(&CameraGigE::onExposureValueChanged, this, _1, _2), -1){
 	LOG(LTRACE) << "Hello CameraGigE from dl\n";
 
 	if (PvInitialize() == ePvErrResources) {
@@ -26,6 +27,7 @@ CameraGigE::CameraGigE(const std::string & name) :
 	registerProperty(m_device_address);
 	registerProperty(m_exposure_mode);
 	registerProperty(m_exposure_value);
+	registerProperty(m_acquisition_mode);
 }
 
 CameraGigE::~CameraGigE() {
@@ -35,8 +37,10 @@ CameraGigE::~CameraGigE() {
 }
 
 void CameraGigE::prepareInterface() {
+	registerStream("in_trigger", &in_trigger);
 	h_onTrigger.setup(this, &CameraGigE::onTrigger);
 	registerHandler("onTrigger", &h_onTrigger);
+	addDependency("onTrigger", &in_trigger);
 
 	registerStream("out_img", &out_img);
 
@@ -79,6 +83,12 @@ bool CameraGigE::onInit() {
 
 	// Set parameters
 	tPvErr err;
+
+	/// AcquisitionMode
+	if ((err = PvAttrEnumSet(cHandle, "AcquisitionMode", std::string(m_acquisition_mode).c_str())) != ePvErrSuccess) {
+		CLOG(LWARNING) << "Error while setting new AcquisitionMode " << m_acquisition_mode << " [" << getErrorMsg(err) << "]";
+	}
+
 	///	 Exposure
 	if (m_exposure_mode != "") {
 		if ((err = PvAttrEnumSet(cHandle, "ExposureMode", std::string(m_exposure_mode).c_str())) == ePvErrSuccess) {
@@ -244,8 +254,12 @@ bool CameraGigE::onInit() {
 		return false;
 	}
 
-	frame.ImageBuffer = new char[frameSize];
-	frame.ImageBufferSize = frameSize;
+	frame[0].ImageBuffer = new char[frameSize];
+	frame[0].ImageBufferSize = frameSize;
+	frame[1].ImageBuffer = new char[frameSize];
+	frame[1].ImageBufferSize = frameSize;
+
+	frame_idx = 0;
 
 	return true;
 }
@@ -257,36 +271,50 @@ bool CameraGigE::onFinish() {
 }
 
 void CameraGigE::onGrabFrame() {
-	CLOG(LTRACE) << "CameraGigE::onStep";
+	tPvErr Err;
 
-	tPvErr Err = PvCaptureQueueFrame(cHandle, &frame, NULL);
+	if ((m_acquisition_mode != "Continuous") && (!trigger)) return;
+
+	trigger = false;
+	if (m_acquisition_mode == "SingleFrame")
+		if (ePvErrSuccess != (Err = PvCommandRun(cHandle, "AcquisitionStart"))) {
+			CLOG(LWARNING) << "Frame trigger failed, error " << Err << " [" << getErrorMsg(Err) << "]";
+		}
+
+	Err = PvCaptureQueueFrame(cHandle, &frame[frame_idx], NULL);
 	if (!Err) {
-		Err = PvCaptureWaitForFrameDone(cHandle, &frame, PVINFINITE);
+		Err = PvCaptureWaitForFrameDone(cHandle, &frame[frame_idx], m_exposure_value*1000*5);
 		if (!Err) {
-			if (frame.Status == ePvErrSuccess) {
-				img = cv::Mat(frame.Height, frame.Width, (frame.Format
-						== ePvFmtMono8) ? CV_8UC1 : CV_8UC3, frame.ImageBuffer);
+
+			if (frame[frame_idx].Status == ePvErrSuccess) {
+				img = cv::Mat(frame[frame_idx].Height, frame[frame_idx].Width, (frame[frame_idx].Format
+						== ePvFmtMono8) ? CV_8UC1 : CV_8UC3, frame[frame_idx].ImageBuffer);
 
 				out_img.write(img);
 			} else {
-				CLOG(LWARNING) << "Grab failed, error " << frame.Status << " [" << getErrorMsg(frame.Status) << "]";
+				CLOG(LWARNING) << "Grab failed, error " << frame[frame_idx].Status << " [" << getErrorMsg(frame[frame_idx].Status) << "]";
 			}
+		} else {
+			CLOG(LWARNING) << "Grab failed, error " << Err << " [" << getErrorMsg(Err) << "]";
 		}
 	}
+	frame_idx = 1 - frame_idx;
 }
 
 bool CameraGigE::onStart() {
 	// set the camera is acquisition mode
-	if (!PvCaptureStart(cHandle)) {
+	if (ePvErrSuccess == PvCaptureStart(cHandle)) {
 		// start the acquisition and make sure the trigger mode is "freerun"
-		if (PvCommandRun(cHandle, "AcquisitionStart")) {
+		if (ePvErrSuccess == PvCommandRun(cHandle, "AcquisitionStart")) {
+			return true;
+		} else {
 			// if that fail, we reset the camera to non capture mode
 			PvCaptureEnd(cHandle);
 			return false;
-		} else
-			return true;
-	} else
+		}
+	} else {
 		return false;
+	}
 }
 
 bool CameraGigE::onStop() {
@@ -296,13 +324,21 @@ bool CameraGigE::onStop() {
 }
 
 void CameraGigE::onTrigger() {
-
+	in_trigger.read();
+	trigger = true;
 }
 
 void CameraGigE::onExposureValueChanged(const double & old_exp, const double & new_exp) {
 	tPvErr err;
 	if ((err = PvAttrUint32Set(cHandle, "ExposureValue", m_exposure_value * 1000000.0)) != ePvErrSuccess) {
 		CLOG(LWARNING) << "Error while setting new exposure " << new_exp << " [" << getErrorMsg(err) << "]";
+	}
+}
+
+void CameraGigE::onAcquisitionModeChanged(const std::string & old_mode, const std::string & new_mode) {
+	tPvErr err;
+	if ((err = PvAttrEnumSet(cHandle, "AcquisitionMode", new_mode.c_str())) != ePvErrSuccess) {
+		CLOG(LWARNING) << "Error while setting new AcquisitionMode " << new_mode << " [" << getErrorMsg(err) << "]";
 	}
 }
 
